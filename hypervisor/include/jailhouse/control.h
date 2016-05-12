@@ -72,6 +72,12 @@ unsigned int next_cpu(unsigned int cpu, struct cpu_set *cpu_set,
 	    )
 
 /**
+ * Fetch the first CPU from a given set
+ * @param set		Return the first from this CPU set
+ */
+#define first_cpu(set)		next_cpu(-1, (set), -1)
+
+/**
  * Loop-generating macro for iterating over all registered cells.
  * @param cell		Iteration variable holding the reference to the current
  * 			cell (struct cell *).
