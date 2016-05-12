@@ -48,12 +48,12 @@ static int arch_handle_hvc(struct trap_context *ctx)
 {
 	unsigned long *regs = ctx->regs;
 
-	if (IS_PSCI_32(regs[0]) || IS_PSCI_64(regs[0])) {
+	if (IS_PSCI_32(regs[0]) || IS_PSCI_64(regs[0]))
 		regs[0] = psci_dispatch(ctx);
-		return TRAP_HANDLED;
-	}
+	else
+		regs[0] = hypercall(regs[0], regs[1], regs[2]);
 
-	return TRAP_UNHANDLED;
+	return TRAP_HANDLED;
 }
 
 static void dump_regs(struct trap_context *ctx)
