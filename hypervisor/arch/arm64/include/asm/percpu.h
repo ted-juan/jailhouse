@@ -57,6 +57,7 @@ struct per_cpu {
 	struct psci_mbox guest_mbox;
 
 	unsigned long mpidr;
+	bool shutdown;
 } __attribute__((aligned(PAGE_SIZE)));
 
 static inline struct per_cpu *this_cpu_data(void)
