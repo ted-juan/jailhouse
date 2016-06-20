@@ -1,7 +1,7 @@
 #
 # Jailhouse, a Linux-based partitioning hypervisor
 #
-# Copyright (c) Siemens AG, 2013
+# Copyright (c) Siemens AG, 2013-2016
 # Copyright (c) Valentine Sinitsyn, 2014
 #
 # Authors:
@@ -15,7 +15,7 @@
 BUILT_IN_OBJECTS := built-in-amd.o built-in-intel.o
 COMMON_OBJECTS := apic.o dbg-write.o entry.o setup.o control.o mmio.o iommu.o \
 		  paging.o ../../pci.o pci.o ioapic.o i8042.o vcpu.o \
-		  ../../ivshmem.o
+		  ../../ivshmem.o ivshmem.o
 
 always := $(BUILT_IN_OBJECTS)
 
