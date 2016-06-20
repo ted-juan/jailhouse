@@ -362,10 +362,10 @@ int pci_init(void)
 	int err;
 
 	mmcfg_start = system_config->platform_info.pci_mmconfig_base;
-	if (mmcfg_start != 0) {
-		end_bus = system_config->platform_info.pci_mmconfig_end_bus;
-		mmcfg_size = (end_bus + 1) * 256 * 4096;
+	end_bus = system_config->platform_info.pci_mmconfig_end_bus;
+	mmcfg_size = (end_bus + 1) * 256 * 4096;
 
+	if (mmcfg_start != 0 && !system_config->platform_info.pci_is_virtual) {
 		pci_space = page_alloc(&remap_pool, mmcfg_size / PAGE_SIZE);
 		if (!pci_space)
 			return trace_error(-ENOMEM);
@@ -657,7 +657,7 @@ int pci_cell_init(struct cell *cell)
 	unsigned int ndev, ncap;
 	int err;
 
-	if (pci_space)
+	if (mmcfg_start != 0)
 		mmio_region_register(cell, mmcfg_start, mmcfg_size,
 				     pci_mmconfig_access_handler, NULL);
 
