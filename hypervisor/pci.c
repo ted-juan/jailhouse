@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2014, 2015
+ * Copyright (c) Siemens AG, 2014-2016
  *
  * Authors:
  *  Ivan Kolchin <ivan.kolchin@siemens.com>
@@ -434,26 +434,25 @@ static enum mmio_result pci_mmconfig_access_handler(void *arg,
 	enum pci_access result;
 	u32 val;
 
-	/* access must be DWORD-aligned */
-	if (reg_addr & 0x3)
+	/* only up to 4-byte accesses supported */
+	if (mmio->size > 4)
 		goto invalid_access;
 
 	device = pci_get_assigned_device(this_cell(), mmio->address >> 12);
 
 	if (mmio->is_write) {
-		result = pci_cfg_write_moderate(device, reg_addr, 4,
+		result = pci_cfg_write_moderate(device, reg_addr, mmio->size,
 						mmio->value);
 		if (result == PCI_ACCESS_REJECT)
 			goto invalid_access;
-		if (result == PCI_ACCESS_PERFORM)
-			mmio_write32(pci_space + mmio->address, mmio->value);
 	} else {
-		result = pci_cfg_read_moderate(device, reg_addr, 4, &val);
-		if (result == PCI_ACCESS_PERFORM)
-			mmio->value = mmio_read32(pci_space + mmio->address);
-		else
+		result = pci_cfg_read_moderate(device, reg_addr, mmio->size,
+					       &val);
+		if (result != PCI_ACCESS_PERFORM)
 			mmio->value = val;
 	}
+	if (result == PCI_ACCESS_PERFORM)
+		mmio_perform_access(pci_space, mmio);
 
 	return MMIO_HANDLED;
 
