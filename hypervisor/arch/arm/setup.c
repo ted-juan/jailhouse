@@ -17,6 +17,7 @@
 #include <asm/sysregs.h>
 #include <jailhouse/control.h>
 #include <jailhouse/paging.h>
+#include <jailhouse/pci.h>
 #include <jailhouse/processor.h>
 #include <jailhouse/string.h>
 
@@ -124,7 +125,11 @@ int arch_init_late(void)
 	if (err)
 		return err;
 
-	return map_root_memory_regions();
+	err = map_root_memory_regions();
+	if (err)
+		return err;
+
+	return pci_init();
 }
 
 void __attribute__((noreturn)) arch_cpu_activate_vmm(struct per_cpu *cpu_data)

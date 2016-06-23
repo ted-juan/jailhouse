@@ -12,13 +12,19 @@
 
 ccflags-y := -I$(src)/../hypervisor/include -Wextra
 
+DTC := ${KDIR}/scripts/dtc/dtc
+
 OBJCOPYFLAGS := -O binary
 
 CONFIGS = $(shell cd $(src); ls *.c)
 
-always := $(CONFIGS:.c=.cell)
+ifneq ($(ARCH),x86)
+DTS = $(shell cd $(src); ls *.dts)
+endif
 
-targets += $(CONFIGS:.c=.o) $(CONFIGS:.c=.cell)
+always := $(CONFIGS:.c=.cell) $(DTS:.dts=.dtb)
+
+targets += $(CONFIGS:.c=.o) $(CONFIGS:.c=.cell) $(DTS:.dts=.dtb)
 
 # prevent deleting intermediate files which would cause rebuilds
 .SECONDARY: $(addprefix $(obj)/,$(CONFIGS:.c=.o))

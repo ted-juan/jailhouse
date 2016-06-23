@@ -244,6 +244,14 @@ static void ivshmem_connect_cell(struct ivshmem_data *iv,
 
 	memcpy(ive->cspace, &default_cspace, sizeof(default_cspace));
 
+	if (d->info->num_msix_vectors == 0) {
+		/* let the PIN rotated based on the device number */
+		ive->cspace[PCI_CFG_INT/4] =
+			(((d->info->bdf >> 3) & 0x3) + 1) << 8;
+		/* disable MSI-X capability */
+		ive->cspace[PCI_CFG_CAPS/4] = 0;
+	}
+
 	ive->cspace[IVSHMEM_CFG_SHMEM_PTR/4] = (u32)mem->virt_start;
 	ive->cspace[IVSHMEM_CFG_SHMEM_PTR/4 + 1] = (u32)(mem->virt_start >> 32);
 	ive->cspace[IVSHMEM_CFG_SHMEM_SZ/4] = (u32)mem->size;
@@ -345,9 +353,6 @@ int ivshmem_init(struct cell *cell, struct pci_device *device)
 	const struct jailhouse_memory *mem, *mem0;
 	struct ivshmem_data **ivp;
 	struct pci_device *dev0;
-
-	if (device->info->num_msix_vectors != 1)
-		return trace_error(-EINVAL);
 
 	if (device->info->shmem_region >= cell->config->num_memory_regions)
 		return trace_error(-EINVAL);

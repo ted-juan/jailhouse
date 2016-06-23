@@ -11,6 +11,7 @@
  */
 
 #include <jailhouse/mmio.h>
+#include <jailhouse/pci.h>
 #include <asm/bitops.h>
 #include <asm/irqchip.h>
 #include <asm/processor.h>
@@ -21,7 +22,8 @@ const unsigned int __attribute__((weak)) smp_mmio_regions;
 
 unsigned int arch_mmio_count_regions(struct cell *cell)
 {
-	return irqchip_mmio_count_regions(cell) + smp_mmio_regions;
+	return irqchip_mmio_count_regions(cell) + smp_mmio_regions +
+		pci_mmio_count_regions(cell);
 }
 
 /* Taken from the ARM ARM pseudocode for taking a data abort */
