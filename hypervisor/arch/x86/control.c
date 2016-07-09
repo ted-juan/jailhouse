@@ -192,8 +192,8 @@ void arch_park_cpu(unsigned int cpu_id)
 
 void arch_shutdown_cpu(unsigned int cpu_id)
 {
-	arch_suspend_cpu(cpu_id);
 	per_cpu(cpu_id)->shutdown_cpu = true;
+
 	arch_resume_cpu(cpu_id);
 }
 

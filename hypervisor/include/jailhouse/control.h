@@ -197,9 +197,8 @@ void arch_park_cpu(unsigned int cpu_id);
  * Releases hypervisor control over the target CPU.
  * @param cpu_id	ID of the target CPU.
  *
- * @note This function must not be invoked for the caller's CPU.
- *
- * @note The target CPU need not be suspended before calling the function.
+ * @note This function must not be invoked for the caller's CPU or if the
+ * target CPU is not in suspend state.
  *
  * @note The caller has to ensure that the target CPU has enough time to reach
  * the shutdown position before destroying the code path it has to take to get
