@@ -14,7 +14,7 @@
 #define _JAILHOUSE_ASM_CONTROL_H
 
 #define SGI_INJECT	0
-#define SGI_CPU_OFF	1
+#define SGI_EVENT	1
 
 #define CACHES_CLEAN		0
 #define CACHES_CLEAN_INVALIDATE	1
@@ -22,22 +22,29 @@
 #ifndef __ASSEMBLY__
 
 #include <jailhouse/cell.h>
+#include <jailhouse/paging.h>
 #include <asm/percpu.h>
+
+extern struct paging_structures parking_mm;
 
 void arch_cpu_dcaches_flush(unsigned int action);
 void arch_cpu_icache_flush(void);
-void arch_cpu_tlb_flush(struct per_cpu *cpu_data);
+void arm_cpu_tlb_flush(void);
 void arch_cell_caches_flush(struct cell *cell);
+
 int arch_mmu_cell_init(struct cell *cell);
 void arch_mmu_cell_destroy(struct cell *cell);
-int arch_mmu_cpu_cell_init(struct per_cpu *cpu_data);
+
+void arm_mmu_cpu_cell_init(struct paging_structures *pg_structs);
+
 void arch_handle_sgi(struct per_cpu *cpu_data, u32 irqn);
 void arch_handle_trap(struct per_cpu *cpu_data, struct registers *guest_regs);
 struct registers* arch_handle_exit(struct per_cpu *cpu_data,
 				   struct registers *regs);
 bool arch_handle_phys_irq(struct per_cpu *cpu_data, u32 irqn);
-void arch_reset_self(struct per_cpu *cpu_data);
+
 void arch_shutdown_self(struct per_cpu *cpu_data);
+
 unsigned int arm_cpu_by_mpidr(struct cell *cell, unsigned long mpidr);
 
 void __attribute__((noreturn)) vmreturn(struct registers *guest_regs);

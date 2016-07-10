@@ -132,11 +132,11 @@ int irqchip_cpu_init(struct per_cpu *cpu_data)
 	return irqchip.cpu_init(cpu_data);
 }
 
-int irqchip_cpu_reset(struct per_cpu *cpu_data)
+void irqchip_cpu_reset(struct per_cpu *cpu_data)
 {
 	cpu_data->pending_irqs_head = cpu_data->pending_irqs_tail = 0;
 
-	return irqchip.cpu_reset(cpu_data, false);
+	irqchip.cpu_reset(cpu_data, false);
 }
 
 void irqchip_cpu_shutdown(struct per_cpu *cpu_data)
@@ -169,7 +169,7 @@ int irqchip_cell_init(struct cell *cell)
 	 * Permit direct access to all SGIs and PPIs except for those used by
 	 * the hypervisor.
 	 */
-	cell->arch.irq_bitmap[0] = ~((1 << SGI_INJECT) | (1 << SGI_CPU_OFF) |
+	cell->arch.irq_bitmap[0] = ~((1 << SGI_INJECT) | (1 << SGI_EVENT) |
 				     (1 << MAINTENANCE_IRQ));
 
 	err = irqchip.cell_init(cell);

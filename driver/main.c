@@ -27,6 +27,9 @@
 #include <asm/smp.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
+#ifdef CONFIG_ARM
+#include <asm/virt.h>
+#endif
 
 #include "cell.h"
 #include "jailhouse.h"
@@ -187,6 +190,13 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	const char *fw_name;
 	long max_cpus;
 	int err;
+
+#ifdef CONFIG_ARM
+	if (!is_hyp_mode_available()) {
+		pr_err("jailhouse: HYP mode not available\n");
+		return -ENODEV;
+	}
+#endif
 
 	fw_name = jailhouse_fw_name();
 	if (!fw_name) {
@@ -421,6 +431,9 @@ static int jailhouse_cmd_disable(void)
 	vunmap(hypervisor_mem);
 
 	jailhouse_cell_delete_root();
+#ifdef CONFIG_ARM
+	__boot_cpu_mode &= ~BOOT_CPU_MODE_MISMATCH;
+#endif
 	jailhouse_enabled = false;
 	module_put(THIS_MODULE);
 

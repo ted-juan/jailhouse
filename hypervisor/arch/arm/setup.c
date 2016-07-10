@@ -20,7 +20,13 @@
 #include <jailhouse/processor.h>
 #include <jailhouse/string.h>
 
+static u32 __attribute__((aligned(PAGE_SIZE))) parking_code[PAGE_SIZE / 4] = {
+	0xe320f003, /* 1: wfi  */
+	0xeafffffd, /*    b 1b */
+};
+
 unsigned int cache_line_size;
+struct paging_structures parking_mm;
 
 static int arch_check_features(void)
 {
@@ -41,9 +47,24 @@ static int arch_check_features(void)
 
 int arch_init_early(void)
 {
-	int err = 0;
+	int err;
 
-	if ((err = arch_check_features()) != 0)
+	err = arch_check_features();
+	if (err)
+		return err;
+
+	parking_mm.root_paging = cell_paging;
+	parking_mm.root_table =
+		page_alloc_aligned(&mem_pool, ARM_CELL_ROOT_PT_SZ);
+	if (!parking_mm.root_table)
+		return -ENOMEM;
+
+	err = paging_create(&parking_mm, paging_hvirt2phys(parking_code),
+			    PAGE_SIZE, 0,
+			    (PTE_FLAG_VALID | PTE_ACCESS_FLAG |
+			     S2_PTE_ACCESS_RO | S2_PTE_FLAG_NORMAL),
+			    PAGING_COHERENT);
+	if (err)
 		return err;
 
 	return arch_mmu_cell_init(&root_cell);
@@ -55,7 +76,6 @@ int arch_cpu_init(struct per_cpu *cpu_data)
 	unsigned long hcr = HCR_VM_BIT | HCR_IMO_BIT | HCR_FMO_BIT
 			  | HCR_TSC_BIT | HCR_TAC_BIT;
 
-	cpu_data->psci_mbox.entry = 0;
 	cpu_data->virt_id = cpu_data->cpu_id;
 	cpu_data->mpidr = phys_processor_id();
 
@@ -63,8 +83,8 @@ int arch_cpu_init(struct per_cpu *cpu_data)
 	 * Copy the registers to restore from the linux stack here, because we
 	 * won't be able to access it later
 	 */
-	memcpy(&cpu_data->linux_reg, (void *)cpu_data->linux_sp, NUM_ENTRY_REGS
-			* sizeof(unsigned long));
+	memcpy(&cpu_data->linux_reg, (void *)cpu_data->linux_sp,
+	       NUM_ENTRY_REGS * sizeof(unsigned long));
 
 	err = switch_exception_level(cpu_data);
 	if (err)
@@ -80,9 +100,7 @@ int arch_cpu_init(struct per_cpu *cpu_data)
 	/* Setup guest traps */
 	arm_write_sysreg(HCR, hcr);
 
-	err = arch_mmu_cpu_cell_init(cpu_data);
-	if (err)
-		return err;
+	arm_mmu_cpu_cell_init(&root_cell.arch.mm);
 
 	err = irqchip_init();
 	if (err)
@@ -102,10 +120,7 @@ int arch_init_late(void)
 	if (err)
 		return err;
 
-	/* Platform-specific SMP operations */
-	register_smp_ops(&root_cell);
-
-	err = root_cell.arch.smp->init(&root_cell);
+	err = smp_init(&root_cell);
 	if (err)
 		return err;
 
@@ -147,7 +162,7 @@ void arch_shutdown_self(struct per_cpu *cpu_data)
 	arm_write_sysreg(VTCR_EL2, 0);
 
 	/* Remove stage-2 mappings */
-	arch_cpu_tlb_flush(cpu_data);
+	arm_cpu_tlb_flush();
 
 	/* TLB flush needs the cell's VMID */
 	isb();

@@ -26,10 +26,6 @@
 /** ARM-specific cell states. */
 struct arch_cell {
 	struct paging_structures mm;
-	struct smp_ops *smp;
-
-	spinlock_t caches_lock;
-	bool needs_flush;
 
 	u32 irq_bitmap[1024/32];
 

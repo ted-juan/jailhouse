@@ -21,9 +21,14 @@
 #include <asm/sysregs.h>
 #include <asm/traps.h>
 
-static void arch_reset_el1(struct registers *regs)
+static void cpu_reset(void)
 {
+	struct per_cpu *cpu_data = this_cpu_data();
+	struct cell *cell = cpu_data->cell;
+	struct registers *regs = guest_regs(cpu_data);
 	u32 sctlr;
+
+	arch_cell_caches_flush(cell);
 
 	/* Wipe all banked and usr regs */
 	memset(regs, 0, sizeof(struct registers));
@@ -84,68 +89,37 @@ static void arch_reset_el1(struct registers *regs)
 	arm_write_sysreg(TPIDRURW, 0);
 	arm_write_sysreg(TPIDRURO, 0);
 	arm_write_sysreg(TPIDRPRW, 0);
-}
 
-void arch_reset_self(struct per_cpu *cpu_data)
-{
-	int err = 0;
-	unsigned long reset_address;
-	struct cell *cell = cpu_data->cell;
-	struct registers *regs = guest_regs(cpu_data);
-	bool is_shutdown = cpu_data->shutdown;
+	arm_write_banked_reg(SPSR_hyp, RESET_PSR);
+	arm_write_banked_reg(ELR_hyp, cpu_data->guest_mbox.entry);
 
-	if (!is_shutdown)
-		err = arch_mmu_cpu_cell_init(cpu_data);
-	if (err)
-		printk("MMU setup failed\n");
-	/*
-	 * On the first CPU to reach this, write all cell datas to memory so it
-	 * can be started with caches disabled.
-	 * On all CPUs, invalidate the instruction caches to take into account
-	 * the potential new instructions.
-	 */
-	arch_cell_caches_flush(cell);
+	/* transfer the context that may have been passed to PSCI_CPU_ON */
+	regs->usr[1] = cpu_data->guest_mbox.context;
 
-	/*
-	 * We come from the IRQ handler, but we won't return there, so the IPI
-	 * is deactivated here.
-	 */
-	irqchip_eoi_irq(SGI_CPU_OFF, true);
-
-	if (!is_shutdown) {
-		err = irqchip_cpu_reset(cpu_data);
-		if (err)
-			printk("IRQ setup failed\n");
-	}
-
-	/* Wait for the driver to call cpu_up */
-	if (cell == &root_cell || is_shutdown)
-		reset_address = arch_smp_spin(cpu_data, root_cell.arch.smp);
-	else
-		reset_address = arch_smp_spin(cpu_data, cell->arch.smp);
-
-	/* Set the new MPIDR */
 	arm_write_sysreg(VMPIDR_EL2, cpu_data->virt_id | MPIDR_MP_BIT);
 
-	/* Restore an empty context */
-	arch_reset_el1(regs);
+	arm_mmu_cpu_cell_init(&cell->arch.mm);
 
-	arm_write_banked_reg(ELR_hyp, reset_address);
-	arm_write_banked_reg(SPSR_hyp, RESET_PSR);
-
-	if (is_shutdown)
-		/* Won't return here. */
-		arch_shutdown_self(cpu_data);
-
-	vmreturn(regs);
+	irqchip_cpu_reset(cpu_data);
 }
 
-static void arch_suspend_self(struct per_cpu *cpu_data)
+static void enter_cpu_off(struct per_cpu *cpu_data)
 {
-	psci_suspend(cpu_data);
+	cpu_data->park = false;
+	cpu_data->wait_for_poweron = true;
+}
 
-	if (cpu_data->flush_vcpu_caches)
-		arch_cpu_tlb_flush(cpu_data);
+static void cpu_park(void)
+{
+	struct per_cpu *cpu_data = this_cpu_data();
+
+	spin_lock(&cpu_data->control_lock);
+	enter_cpu_off(cpu_data);
+	spin_unlock(&cpu_data->control_lock);
+
+	cpu_reset();
+	arm_write_banked_reg(ELR_hyp, 0);
+	arm_mmu_cpu_cell_init(&parking_mm);
 }
 
 static void arch_dump_exit(struct registers *regs, const char *reason)
@@ -210,65 +184,125 @@ struct registers* arch_handle_exit(struct per_cpu *cpu_data,
 		panic_stop();
 	}
 
-	if (cpu_data->shutdown)
-		/* Won't return here. */
-		arch_shutdown_self(cpu_data);
+	if (cpu_data->flush_dcache) {
+		cpu_data->flush_dcache = false;
+		isb();
+		/* FIXME: understand why we need this */
+		arch_cpu_dcaches_flush(CACHES_CLEAN_INVALIDATE);
+	}
 
 	return regs;
 }
 
-/* CPU must be stopped */
-void arch_resume_cpu(unsigned int cpu_id)
+static void cpu_kick(unsigned int cpu_id)
 {
-	/*
-	 * Simply get out of the spin loop by returning to handle_sgi
-	 * If the CPU is being reset, it already has left the PSCI idle loop.
-	 */
-	if (psci_cpu_stopped(cpu_id))
-		psci_resume(cpu_id);
-}
+	struct sgi sgi = {};
 
-/* CPU must be stopped */
-void arch_park_cpu(unsigned int cpu_id)
-{
-	struct per_cpu *cpu_data = per_cpu(cpu_id);
-
-	/*
-	 * Reset always follows park_cpu, so we just need to make sure that the
-	 * CPU is suspended
-	 */
-	if (psci_wait_cpu_stopped(cpu_id) != 0)
-		printk("ERROR: CPU%d is supposed to be stopped\n", cpu_id);
-	else
-		cpu_data->cell->arch.needs_flush = true;
-}
-
-/* CPU must be stopped */
-void arch_reset_cpu(unsigned int cpu_id)
-{
-	unsigned long cpu_data = (unsigned long)per_cpu(cpu_id);
-
-	if (psci_cpu_on(cpu_id, (unsigned long)arch_reset_self, cpu_data))
-		printk("ERROR: unable to reset CPU%d (was running)\n", cpu_id);
+	sgi.targets = 1 << cpu_id;
+	sgi.id = SGI_EVENT;
+	irqchip_send_sgi(&sgi);
 }
 
 void arch_suspend_cpu(unsigned int cpu_id)
 {
-	struct sgi sgi;
+	struct per_cpu *target_data = per_cpu(cpu_id);
+	bool target_suspended;
 
-	if (psci_cpu_stopped(cpu_id))
-		return;
+	spin_lock(&target_data->control_lock);
 
-	sgi.routing_mode = 0;
-	sgi.aff1 = 0;
-	sgi.aff2 = 0;
-	sgi.aff3 = 0;
-	sgi.targets = 1 << cpu_id;
-	sgi.id = SGI_CPU_OFF;
+	target_data->suspend_cpu = true;
+	target_suspended = target_data->cpu_suspended;
 
-	irqchip_send_sgi(&sgi);
+	spin_unlock(&target_data->control_lock);
 
-	psci_wait_cpu_stopped(cpu_id);
+	if (!target_suspended) {
+		cpu_kick(cpu_id);
+
+		while (!target_data->cpu_suspended)
+			cpu_relax();
+	}
+}
+
+void arch_resume_cpu(unsigned int cpu_id)
+{
+	struct per_cpu *target_data = per_cpu(cpu_id);
+
+	/* take lock to avoid theoretical race with a pending suspension */
+	spin_lock(&target_data->control_lock);
+
+	target_data->suspend_cpu = false;
+
+	spin_unlock(&target_data->control_lock);
+}
+
+void arch_reset_cpu(unsigned int cpu_id)
+{
+	per_cpu(cpu_id)->reset = true;
+
+	arch_resume_cpu(cpu_id);
+}
+
+void arch_park_cpu(unsigned int cpu_id)
+{
+	per_cpu(cpu_id)->park = true;
+
+	arch_resume_cpu(cpu_id);
+}
+
+static void check_events(struct per_cpu *cpu_data)
+{
+	bool reset = false;
+
+	spin_lock(&cpu_data->control_lock);
+
+	do {
+		if (cpu_data->suspend_cpu)
+			cpu_data->cpu_suspended = true;
+
+		spin_unlock(&cpu_data->control_lock);
+
+		while (cpu_data->suspend_cpu)
+			cpu_relax();
+
+		spin_lock(&cpu_data->control_lock);
+
+		if (!cpu_data->suspend_cpu) {
+			cpu_data->cpu_suspended = false;
+
+			if (cpu_data->park) {
+				enter_cpu_off(cpu_data);
+				break;
+			}
+
+			if (cpu_data->reset) {
+				cpu_data->reset = false;
+				if (cpu_data->guest_mbox.entry !=
+				    PSCI_INVALID_ADDRESS) {
+					cpu_data->wait_for_poweron = false;
+					reset = true;
+				} else {
+					enter_cpu_off(cpu_data);
+				}
+				break;
+			}
+		}
+	} while (cpu_data->suspend_cpu);
+
+	if (cpu_data->flush_vcpu_caches) {
+		cpu_data->flush_vcpu_caches = false;
+		arm_cpu_tlb_flush();
+	}
+
+	spin_unlock(&cpu_data->control_lock);
+
+	/*
+	 * wait_for_poweron is only modified on this CPU, so checking outside of
+	 * control_lock is fine.
+	 */
+	if (cpu_data->wait_for_poweron)
+		cpu_park();
+	else if (reset)
+		cpu_reset();
 }
 
 void arch_handle_sgi(struct per_cpu *cpu_data, u32 irqn)
@@ -279,8 +313,8 @@ void arch_handle_sgi(struct per_cpu *cpu_data, u32 irqn)
 	case SGI_INJECT:
 		irqchip_inject_pending(cpu_data);
 		break;
-	case SGI_CPU_OFF:
-		arch_suspend_self(cpu_data);
+	case SGI_EVENT:
+		check_events(cpu_data);
 		break;
 	default:
 		printk("WARN: unknown SGI received %d\n", irqn);
@@ -319,6 +353,82 @@ bool arch_handle_phys_irq(struct per_cpu *cpu_data, u32 irqn)
 	return false;
 }
 
+static long psci_emulate_cpu_on(struct per_cpu *cpu_data,
+				struct trap_context *ctx)
+{
+	struct per_cpu *target_data;
+	bool kick_cpu = false;
+	unsigned int cpu;
+	long result;
+
+	cpu = arm_cpu_by_mpidr(cpu_data->cell, ctx->regs[1]);
+	if (cpu == -1)
+		/* Virtual id not in set */
+		return PSCI_DENIED;
+
+	target_data = per_cpu(cpu);
+
+	spin_lock(&target_data->control_lock);
+
+	if (target_data->wait_for_poweron) {
+		target_data->guest_mbox.entry = ctx->regs[2];
+		target_data->guest_mbox.context = ctx->regs[3];
+		target_data->reset = true;
+		kick_cpu = true;
+
+		result = PSCI_SUCCESS;
+	} else {
+		result = PSCI_ALREADY_ON;
+	}
+
+	spin_unlock(&target_data->control_lock);
+
+	if (kick_cpu)
+		cpu_kick(cpu);
+
+	return result;
+}
+
+static long psci_emulate_affinity_info(struct per_cpu *cpu_data,
+				       struct trap_context *ctx)
+{
+	unsigned int cpu = arm_cpu_by_mpidr(cpu_data->cell, ctx->regs[1]);
+
+	if (cpu == -1)
+		/* Virtual id not in set */
+		return PSCI_DENIED;
+
+	return per_cpu(cpu)->wait_for_poweron ?
+		PSCI_CPU_IS_OFF : PSCI_CPU_IS_ON;
+}
+
+long psci_dispatch(struct trap_context *ctx)
+{
+	struct per_cpu *cpu_data = this_cpu_data();
+	u32 function_id = ctx->regs[0];
+
+	switch (function_id) {
+	case PSCI_VERSION:
+		/* Major[31:16], minor[15:0] */
+		return 2;
+
+	case PSCI_CPU_OFF:
+	case PSCI_CPU_OFF_V0_1_UBOOT:
+		cpu_park();
+		return 0;
+
+	case PSCI_CPU_ON_32:
+	case PSCI_CPU_ON_V0_1_UBOOT:
+		return psci_emulate_cpu_on(cpu_data, ctx);
+
+	case PSCI_AFFINITY_INFO_32:
+		return psci_emulate_affinity_info(cpu_data, ctx);
+
+	default:
+		return PSCI_NOT_SUPPORTED;
+	}
+}
+
 int arch_cell_create(struct cell *cell)
 {
 	int err;
@@ -334,6 +444,8 @@ int arch_cell_create(struct cell *cell)
 	 * the cell set
 	 */
 	for_each_cpu(cpu, cell->cpu_set) {
+		per_cpu(cpu)->guest_mbox.entry =
+			(virt_id == 0) ? 0 : PSCI_INVALID_ADDRESS;
 		per_cpu(cpu)->virt_id = virt_id;
 		virt_id++;
 	}
@@ -345,8 +457,6 @@ int arch_cell_create(struct cell *cell)
 		return err;
 	}
 
-	register_smp_ops(cell);
-
 	return 0;
 }
 
@@ -357,6 +467,7 @@ void arch_cell_destroy(struct cell *cell)
 
 	for_each_cpu(cpu, cell->cpu_set) {
 		percpu = per_cpu(cpu);
+		percpu->guest_mbox.entry = PSCI_INVALID_ADDRESS;
 		/* Re-assign the physical IDs for the root cell */
 		percpu->virt_id = percpu->cpu_id;
 		arch_reset_cpu(cpu);
@@ -374,7 +485,7 @@ void arch_flush_cell_vcpu_caches(struct cell *cell)
 
 	for_each_cpu(cpu, cell->cpu_set)
 		if (cpu == this_cpu_id())
-			arch_cpu_tlb_flush(per_cpu(cpu));
+			arm_cpu_tlb_flush();
 		else
 			per_cpu(cpu)->flush_vcpu_caches = true;
 }
@@ -385,28 +496,12 @@ void arch_config_commit(struct cell *cell_added_removed)
 
 void __attribute__((noreturn)) arch_panic_stop(void)
 {
-	psci_cpu_off(this_cpu_data());
+	asm volatile ("1: wfi; b 1b");
 	__builtin_unreachable();
 }
 
-void arch_panic_park(void)
-{
-	/* Won't return to panic_park */
-	if (phys_processor_id() == panic_cpu)
-		panic_in_progress = 0;
-
-	psci_cpu_off(this_cpu_data());
-	__builtin_unreachable();
-}
+void arch_panic_park(void) __attribute__((alias("cpu_park")));
 
 void arch_shutdown(void)
 {
-	unsigned int cpu;
-
-	/*
-	 * Let the exit handler call reset_self to let the core finish its
-	 * shutdown function and release its lock.
-	 */
-	for_each_cpu(cpu, root_cell.cpu_set)
-		per_cpu(cpu)->shutdown = true;
 }

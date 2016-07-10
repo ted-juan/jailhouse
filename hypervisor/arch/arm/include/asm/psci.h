@@ -53,31 +53,14 @@
 
 #ifndef __ASSEMBLY__
 
-#include <jailhouse/types.h>
-
-struct cell;
 struct trap_context;
-struct per_cpu;
 
 struct psci_mbox {
 	unsigned long entry;
 	unsigned long context;
 };
 
-void psci_cpu_off(struct per_cpu *cpu_data);
-long psci_cpu_on(unsigned int target, unsigned long entry,
-		 unsigned long context);
-bool psci_cpu_stopped(unsigned int cpu_id);
-int psci_wait_cpu_stopped(unsigned int cpu_id);
-
-void psci_suspend(struct per_cpu *cpu_data);
-long psci_resume(unsigned int target);
-long psci_try_resume(unsigned int cpu_id);
-
 long psci_dispatch(struct trap_context *ctx);
-
-int psci_cell_init(struct cell *cell);
-unsigned long psci_emulate_spin(struct per_cpu *cpu_data);
 
 #endif /* !__ASSEMBLY__ */
 #endif /* _JAILHOUSE_ASM_PSCI_H */

@@ -59,7 +59,7 @@ static void gic_clear_pending_irqs(void)
 	mmio_write32(gich_base + GICH_APR, 0);
 }
 
-static int gic_cpu_reset(struct per_cpu *cpu_data, bool is_shutdown)
+static void gic_cpu_reset(struct per_cpu *cpu_data, bool is_shutdown)
 {
 	unsigned int i;
 	bool root_shutdown = is_shutdown && (cpu_data->cell == &root_cell);
@@ -108,8 +108,6 @@ static int gic_cpu_reset(struct per_cpu *cpu_data, bool is_shutdown)
 		gich_vmcr = 0;
 	}
 	mmio_write32(gich_base + GICH_VMCR, gich_vmcr);
-
-	return 0;
 }
 
 static int gic_cpu_init(struct per_cpu *cpu_data)
@@ -194,7 +192,7 @@ static int gic_cell_init(struct cell *cell)
 			    gicc_size, (unsigned long)gicc_base,
 			    (PTE_FLAG_VALID | PTE_ACCESS_FLAG |
 			     S2_PTE_ACCESS_RW | S2_PTE_FLAG_DEVICE),
-			    PAGING_NON_COHERENT);
+			    PAGING_COHERENT);
 	if (err)
 		return err;
 
@@ -206,7 +204,7 @@ static int gic_cell_init(struct cell *cell)
 static void gic_cell_exit(struct cell *cell)
 {
 	paging_destroy(&cell->arch.mm, (unsigned long)gicc_base, gicc_size,
-		       PAGING_NON_COHERENT);
+		       PAGING_COHERENT);
 }
 
 static void gic_adjust_irq_target(struct cell *cell, u16 irq_id)

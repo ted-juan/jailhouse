@@ -12,20 +12,10 @@
 
 #include <jailhouse/mmio.h>
 #include <asm/smp.h>
-#include <asm/traps.h>
 
 const unsigned int __attribute__((weak)) smp_mmio_regions;
 
-unsigned long arch_smp_spin(struct per_cpu *cpu_data, struct smp_ops *ops)
+int __attribute__((weak)) smp_init(struct cell *cell)
 {
-	/*
-	 * Hotplugging CPU0 is not currently supported. It is always assumed to
-	 * be the primary CPU. This is consistent with the linux behavior on
-	 * most platforms.
-	 * The guest image always starts at virtual address 0.
-	 */
-	if (cpu_data->virt_id == 0)
-		return 0;
-
-	return ops->cpu_spin(cpu_data);
+	return 0;
 }

@@ -53,9 +53,11 @@ static bool arch_failed_condition(struct trap_context *ctx)
 {
 	u32 class = ESR_EC(ctx->esr);
 	u32 icc = ESR_ICC(ctx->esr);
-	u32 cpsr = ctx->cpsr;
-	u32 flags = cpsr >> 28;
-	u32 cond;
+	u32 cpsr, flags, cond;
+
+	arm_read_banked_reg(SPSR_hyp, cpsr);
+	flags = cpsr >> 28;
+
 	/*
 	 * Trapped instruction is unconditional, already passed the condition
 	 * check, or is invalid
@@ -95,8 +97,9 @@ static bool arch_failed_condition(struct trap_context *ctx)
 static void arch_advance_itstate(struct trap_context *ctx)
 {
 	unsigned long itbits, cond;
-	unsigned long cpsr = ctx->cpsr;
+	u32 cpsr;
 
+	arm_read_banked_reg(SPSR_hyp, cpsr);
 	if (!(cpsr & PSR_IT_MASK(0xff)))
 		return;
 
@@ -113,21 +116,26 @@ static void arch_advance_itstate(struct trap_context *ctx)
 	cpsr &= ~PSR_IT_MASK(0xff);
 	cpsr |= PSR_IT_MASK(itbits);
 
-	ctx->cpsr = cpsr;
+	arm_write_banked_reg(SPSR_hyp, cpsr);
 }
 
 void arch_skip_instruction(struct trap_context *ctx)
 {
-	u32 instruction_length = ESR_IL(ctx->esr);
+	u32 pc;
 
-	ctx->pc += (instruction_length ? 4 : 2);
+	arm_read_banked_reg(ELR_hyp, pc);
+	pc += ESR_IL(ctx->esr) ? 4 : 2;
+	arm_write_banked_reg(ELR_hyp, pc);
 	arch_advance_itstate(ctx);
 }
 
 void access_cell_reg(struct trap_context *ctx, u8 reg, unsigned long *val,
 		     bool is_read)
 {
-	unsigned long mode = ctx->cpsr & PSR_MODE_MASK;
+	u32 mode;
+
+	arm_read_banked_reg(SPSR_hyp, mode);
+	mode &= PSR_MODE_MASK;
 
 	switch (reg) {
 	case 0 ... 7:
@@ -178,9 +186,9 @@ void access_cell_reg(struct trap_context *ctx, u8 reg, unsigned long *val,
 		printk("WARNING: trapped instruction attempted to explicitly "
 		       "access the PC.\n");
 		if (is_read)
-			*val = ctx->pc;
+			arm_read_banked_reg(ELR_hyp, *val);
 		else
-			ctx->pc = *val;
+			arm_write_banked_reg(ELR_hyp, *val);
 		break;
 	default:
 		/* Programming error */
@@ -193,9 +201,11 @@ static void dump_guest_regs(struct trap_context *ctx)
 {
 	u8 reg;
 	unsigned long reg_val;
+	u32 pc, cpsr;
 
-	panic_printk("pc=0x%08x cpsr=0x%08x esr=0x%08x\n", ctx->pc, ctx->cpsr,
-			ctx->esr);
+	arm_read_banked_reg(ELR_hyp, pc);
+	arm_read_banked_reg(SPSR_hyp, cpsr);
+	panic_printk("pc=0x%08x cpsr=0x%08x esr=0x%08x\n", pc, cpsr, ctx->esr);
 	for (reg = 0; reg < 15; reg++) {
 		access_cell_reg(ctx, reg, &reg_val, true);
 		panic_printk("r%d=0x%08x ", reg, reg_val);
@@ -222,11 +232,16 @@ static int arch_handle_smc(struct trap_context *ctx)
 static int arch_handle_hvc(struct trap_context *ctx)
 {
 	unsigned long *regs = ctx->regs;
+	unsigned long code = regs[0];
 
-	if (IS_PSCI_32(regs[0]) || IS_PSCI_UBOOT(regs[0]))
+	if (IS_PSCI_32(code) || IS_PSCI_UBOOT(code)) {
 		regs[0] = psci_dispatch(ctx);
-	else
-		regs[0] = hypercall(regs[0], regs[1], regs[2]);
+	} else {
+		regs[0] = hypercall(code, regs[1], regs[2]);
+
+		if (code == JAILHOUSE_HC_DISABLE && regs[0] == 0)
+			arch_shutdown_self(this_cpu_data());
+	}
 
 	return TRAP_HANDLED;
 }
@@ -300,8 +315,6 @@ void arch_handle_trap(struct per_cpu *cpu_data, struct registers *guest_regs)
 	u32 exception_class;
 	int ret = TRAP_UNHANDLED;
 
-	arm_read_banked_reg(ELR_hyp, ctx.pc);
-	arm_read_banked_reg(SPSR_hyp, ctx.cpsr);
 	arm_read_sysreg(ESR_EL2, ctx.esr);
 	exception_class = ESR_EC(ctx.esr);
 	ctx.regs = guest_regs->usr;
@@ -312,7 +325,7 @@ void arch_handle_trap(struct per_cpu *cpu_data, struct registers *guest_regs)
 	 */
 	if (arch_failed_condition(&ctx)) {
 		arch_skip_instruction(&ctx);
-		goto restore_context;
+		return;
 	}
 
 	if (trap_handlers[exception_class])
@@ -328,8 +341,4 @@ void arch_handle_trap(struct per_cpu *cpu_data, struct registers *guest_regs)
 		dump_guest_regs(&ctx);
 		panic_park();
 	}
-
-restore_context:
-	arm_write_banked_reg(SPSR_hyp, ctx.cpsr);
-	arm_write_banked_reg(ELR_hyp, ctx.pc);
 }
